@@ -218,6 +218,11 @@ async def startup_event():
     model: nn.Module = timm.create_model("hf-hub:" + repo_id).eval()
     state_dict = timm.models.load_state_dict_from_hf(repo_id)
     model.load_state_dict(state_dict)
+
+    # move model to GPU, if available
+    if torch_device.type != "cpu":
+        model = model.to(torch_device)
+
     app._model = model
 
     print("Loading tag list...")
@@ -261,10 +266,9 @@ def interrogate(req: InterrogationRequest):
 
     print("Running inference...")
     with torch.inference_mode():
-        # move model to GPU, if available
         if torch_device.type != "cpu":
-            model = model.to(torch_device)
             inputs = inputs.to(torch_device)
+
         # run the model
         outputs = model.forward(inputs)
         # apply the final activation function (timm doesn't support doing this internally)
@@ -273,7 +277,6 @@ def interrogate(req: InterrogationRequest):
         if torch_device.type != "cpu":
             inputs = inputs.to("cpu")
             outputs = outputs.to("cpu")
-            model = model.to("cpu")
 
     print("Processing results...")
     _caption, _taglist, _ratings, _character, _general, final_caption = get_tags(
