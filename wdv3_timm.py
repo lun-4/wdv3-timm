@@ -2,6 +2,7 @@ import base64
 import os
 import io
 import uvicorn
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -232,6 +233,7 @@ async def startup_event():
     print("Creating data transform...")
     transform = create_transform(**resolve_data_config(model.pretrained_cfg, model=model))
     app._transform = transform
+    app._lock = threading.Lock()
     print("OK")
 
 
@@ -248,6 +250,10 @@ class InterrogationRequest(BaseModel):
 
 @app.post("/tagger/v1/interrogate")
 def interrogate(req: InterrogationRequest):
+    with app._lock:
+        return exec_server(req)
+
+def exec_server(req: InterrogationRequest):
     model = app._model
     transform = app._transform
     labels = app._labels
