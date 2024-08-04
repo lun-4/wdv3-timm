@@ -1,3 +1,7 @@
+import base64
+import os
+import io
+import uvicorn
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -13,6 +17,8 @@ from simple_parsing import field, parse_known_args
 from timm.data import create_transform, resolve_data_config
 from torch import Tensor, nn
 from torch.nn import functional as F
+from fastapi import FastAPI
+from pydantic import BaseModel
 
 torch_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL_REPO_MAP = {
@@ -106,7 +112,11 @@ def get_tags(
     caption = ", ".join(combined_names)
     taglist = caption.replace("_", " ").replace("(", "\(").replace(")", "\)")
 
-    return caption, taglist, rating_labels, char_labels, gen_labels
+    vals = {x: y for x, y in gen_labels.items()}
+    vals.update({x: y for x, y in char_labels.items()})
+    vals.update({x: y for x, y in rating_labels.items()})
+
+    return caption, taglist, rating_labels, char_labels, gen_labels, vals
 
 
 @dataclass
@@ -163,7 +173,7 @@ def main(opts: ScriptOptions):
             model = model.to("cpu")
 
     print("Processing results...")
-    caption, taglist, ratings, character, general = get_tags(
+    caption, taglist, ratings, character, general, _ = get_tags(
         probs=outputs.squeeze(0),
         labels=labels,
         gen_threshold=opts.gen_threshold,
@@ -191,6 +201,92 @@ def main(opts: ScriptOptions):
         print(f"  {k}: {v:.3f}")
 
     print("Done!")
+    return "test"
+
+
+app = FastAPI()
+
+
+@app.on_event("startup")
+async def startup_event():
+    wanted_model = os.environ["MODEL"]
+    if wanted_model not in MODEL_REPO_MAP:
+        print(f"Available models: {list(MODEL_REPO_MAP.keys())}")
+        raise ValueError(f"Unknown model name '{wanted_model}'")
+
+    repo_id = MODEL_REPO_MAP.get(wanted_model)
+    print(f"Loading model '{wanted_model}' from '{repo_id}'...")
+    model: nn.Module = timm.create_model("hf-hub:" + repo_id).eval()
+    state_dict = timm.models.load_state_dict_from_hf(repo_id)
+    model.load_state_dict(state_dict)
+    app._model = model
+
+    print("Loading tag list...")
+    labels: LabelData = load_labels_hf(repo_id=repo_id)
+    app._labels = labels
+
+    print("Creating data transform...")
+    transform = create_transform(**resolve_data_config(model.pretrained_cfg, model=model))
+    app._transform = transform
+    print("OK")
+
+
+@app.get("/")
+def index():
+    return "hewwo"
+
+
+class InterrogationRequest(BaseModel):
+    model: str
+    threshold: float
+    image: str
+
+
+@app.post("/tagger/v1/interrogate")
+def interrogate(req: InterrogationRequest):
+    model = app._model
+    transform = app._transform
+    labels = app._labels
+
+    print("Loading image and preprocessing...")
+    img_bytes = base64.b64decode(req.image)
+    img_input: Image.Image = Image.open(io.BytesIO(img_bytes))
+    # ensure image is RGB
+    img_input = pil_ensure_rgb(img_input)
+    # pad to square with white background
+    img_input = pil_pad_square(img_input)
+    # run the model's input transform to convert to tensor and rescale
+    inputs: Tensor = transform(img_input).unsqueeze(0)
+    # NCHW image RGB to BGR
+    inputs = inputs[:, [2, 1, 0]]
+
+    print("Running inference...")
+    with torch.inference_mode():
+        # move model to GPU, if available
+        if torch_device.type != "cpu":
+            model = model.to(torch_device)
+            inputs = inputs.to(torch_device)
+        # run the model
+        outputs = model.forward(inputs)
+        # apply the final activation function (timm doesn't support doing this internally)
+        outputs = F.sigmoid(outputs)
+        # move inputs, outputs, and model back to to cpu if we were on GPU
+        if torch_device.type != "cpu":
+            inputs = inputs.to("cpu")
+            outputs = outputs.to("cpu")
+            model = model.to("cpu")
+
+    print("Processing results...")
+    _caption, _taglist, _ratings, _character, _general, final_caption = get_tags(
+        probs=outputs.squeeze(0),
+        labels=labels,
+        gen_threshold=req.threshold,
+        char_threshold=req.threshold,
+    )
+
+    return {
+        'caption': {k: v.item() for k, v in final_caption.items()},
+    }
 
 
 if __name__ == "__main__":
