@@ -285,7 +285,8 @@ def interrogate(req: InterrogationRequest):
 
     return {
         'caption': {
-            'tag': {k: v.item() for k, v in final_caption.items()}
+            'tag': {k: v.item() for k, v in final_caption.items()},
+            'rating': {},
         },
     }
 
