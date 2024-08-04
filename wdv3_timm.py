@@ -201,7 +201,6 @@ def main(opts: ScriptOptions):
         print(f"  {k}: {v:.3f}")
 
     print("Done!")
-    return "test"
 
 
 app = FastAPI()
@@ -285,7 +284,9 @@ def interrogate(req: InterrogationRequest):
     )
 
     return {
-        'caption': {k: v.item() for k, v in final_caption.items()},
+        'caption': {
+            'tag': {k: v.item() for k, v in final_caption.items()}
+        },
     }
 
 

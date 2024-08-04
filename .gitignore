@@ -251,3 +251,4 @@ $RECYCLE.BIN/
 # input images and heatmap outputs
 /images/
 /heatmaps/
+models/
